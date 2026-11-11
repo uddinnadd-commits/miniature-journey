@@ -12,31 +12,43 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      # Finds this project's settings.gradle wherever it is. If you accidentally
-      # uploaded the project as a .zip, this unpacks it first so the build still works.
+      # Finds this project's settings.gradle wherever it is. If the project was uploaded
+      # as one or more .zip files (even with spaces in the name, like "x (1).zip"), they are
+      # unpacked first; when there are several, the most recently committed one wins.
       - name: Find the project
         id: locate
         shell: bash
         run: |
           set -e
           find_settings() {
-            local all mine
-            all="$(find . -name settings.gradle -not -path './.git/*')"
-            if [ -z "$all" ]; then return 0; fi
-            # Prefer this mod's settings.gradle if the repo also holds other projects.
-            mine="$(echo "$all" | xargs grep -l "rootProject.name = 'tooperfect'" 2>/dev/null | head -n 1 || true)"
-            if [ -n "$mine" ]; then echo "$mine"; else echo "$all" | head -n 1; fi
+            local mine=""
+            mine="$(find . -name settings.gradle -not -path './.git/*' -print0 \
+              | xargs -0 -r grep -l "rootProject.name = 'tooperfect'" 2>/dev/null | head -n 1 || true)"
+            if [ -n "$mine" ]; then
+              echo "$mine"
+            else
+              find . -name settings.gradle -not -path './.git/*' -print -quit
+            fi
           }
+
           SETTINGS="$(find_settings)"
           if [ -z "$SETTINGS" ]; then
-            echo "No settings.gradle yet - looking for a zip to unpack..."
-            for z in $(find . -maxdepth 3 -name '*.zip' -not -path './.git/*'); do
-              echo "Unpacking $z"
-              unzip -o -q "$z" -d "_unzipped_$(basename "$z" .zip)"
-            done
+            echo "No settings.gradle yet - looking for zip files to unpack..."
+            while IFS= read -r -d '' z; do
+              ct="$(git log -1 --format=%ct -- "$z" 2>/dev/null || true)"
+              printf '%s\t%s\0' "${ct:-0}" "$z"
+            done < <(find . -maxdepth 3 -iname '*.zip' -not -path './.git/*' -print0) \
+              | sort -z -n \
+              | while IFS=$'\t' read -r -d '' ct z; do
+                  echo "Unpacking: $z"
+                  unzip -o -q "$z" -d _unzipped
+                done
             SETTINGS="$(find_settings)"
           fi
+
           if [ -z "$SETTINGS" ]; then
             echo "::error::No settings.gradle found. Upload the CONTENTS of the project (not the .zip itself) to the repo root."
             ls -la
